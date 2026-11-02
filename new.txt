@@ -1,0 +1,373 @@
+module sequence_detector_101 #(
+    parameter integer DEBOUNCE_CYCLES = 1_000_000
+)(
+    input  wire clk,
+    input  wire reset,
+    input  wire data_switch,
+    input  wire step_btn,
+    output reg  led1,
+    output reg  led2
+);
+
+    // FSM states
+    localparam S0 = 2'b00;
+    localparam S1 = 2'b01;
+    localparam S2 = 2'b10;
+    localparam S3 = 2'b11;
+
+    reg [1:0] state, next_state;
+    reg [3:0] bit_count;
+
+    // Push-button synchronization
+    reg btn_sync1, btn_sync2;
+
+    always @(posedge clk) begin
+        btn_sync1 <= step_btn;
+        btn_sync2 <= btn_sync1;
+    end
+
+    // Debouncing
+    localparam integer CW =
+        (DEBOUNCE_CYCLES <= 1) ? 1 : $clog2(DEBOUNCE_CYCLES);
+
+    reg [CW-1:0] debounce_count = 0;
+    reg btn_stable = 0;
+    reg btn_previous = 0;
+
+    always @(posedge clk) begin
+        if (reset) begin
+            debounce_count <= 0;
+            btn_stable <= 0;
+            btn_previous <= 0;
+        end
+        else begin
+            btn_previous <= btn_stable;
+
+            if (btn_sync2 == btn_stable)
+                debounce_count <= 0;
+            else if (debounce_count == DEBOUNCE_CYCLES - 1) begin
+                btn_stable <= btn_sync2;
+                debounce_count <= 0;
+            end
+            else
+                debounce_count <= debounce_count + 1'b1;
+        end
+    end
+
+    // One pulse for each new press
+    wire step_pulse = btn_stable & ~btn_previous;
+
+    // FSM state transition logic
+    always @(*) begin
+        next_state = state;
+
+        case (state)
+            S0: begin
+                if (data_switch == 1'b1)
+                    next_state = S1;
+                else
+                    next_state = S0;
+            end
+
+            S1: begin
+                if (data_switch == 1'b0)
+                    next_state = S2;
+                else
+                    next_state = S1;
+            end
+
+            S2: begin
+                if (data_switch == 1'b1)
+                    next_state = S3;
+                else
+                    next_state = S0;
+            end
+
+            S3: next_state = S3;
+
+            default: next_state = S0;
+        endcase
+    end
+
+    // State register, 8-bit window and LED outputs
+    always @(posedge clk) begin
+        if (reset) begin
+            state <= S0;
+            bit_count <= 0;
+            led1 <= 0;
+            led2 <= 0;
+        end
+        else if (step_pulse && bit_count < 8 &&
+                 state != S3 && led2 == 0) begin
+
+            state <= next_state;
+            bit_count <= bit_count + 1'b1;
+
+            if (next_state == S3) begin
+                led1 <= 1'b1;
+                led2 <= 1'b0;
+            end
+            else if (bit_count == 7) begin
+                led1 <= 1'b0;
+                led2 <= 1'b1;
+            end
+        end
+    end
+
+endmodule
+
+
+
+`timescale 1ns / 1ps
+
+module sequence_detector_101_tb;
+
+    reg clk = 0;
+    reg reset = 0;
+    reg data_switch = 0;
+    reg step_btn = 0;
+
+    wire led1, led2;
+
+    // Faster debounce for simulation
+    sequence_detector_101 #(
+        .DEBOUNCE_CYCLES(4)
+    ) dut (
+        .clk(clk),
+        .reset(reset),
+        .data_switch(data_switch),
+        .step_btn(step_btn),
+        .led1(led1),
+        .led2(led2)
+    );
+
+    // 10 ns clock period
+    always #5 clk = ~clk;
+
+    // Enter one bit using one button press
+    task enter_bit(input bit_value);
+        begin
+            data_switch = bit_value;
+            #20;
+            step_btn = 1;
+            #80;
+            step_btn = 0;
+            #80;
+        end
+    endtask
+
+    initial begin
+        // Reset
+        reset = 1;
+        #20;
+        reset = 0;
+        #30;
+
+        // Test 1: Detect 101
+        enter_bit(1);
+        enter_bit(0);
+        enter_bit(1);
+
+        #20;
+        $display("Test 1: led1=%b, led2=%b", led1, led2);
+
+        // Reset for next test
+        reset = 1;
+        #20;
+        reset = 0;
+        #30;
+
+        // Test 2: No 101 in eight bits
+        enter_bit(0);
+        enter_bit(0);
+        enter_bit(0);
+        enter_bit(0);
+        enter_bit(0);
+        enter_bit(0);
+        enter_bit(0);
+        enter_bit(0);
+
+        #20;
+        $display("Test 2: led1=%b, led2=%b", led1, led2);
+
+        $finish;
+    end
+
+endmodule
+
+`timescale 1ns / 1ps
+//////////////////////////////////////////////////////////////////////////////////
+// Company: 
+// Engineer: 
+// 
+// Create Date: 26.10.2026 15:25:31
+// Design Name: 
+// Module Name: traffic_controller
+// Project Name: 
+// Target Devices: 
+// Tool Versions: 
+// Description: 
+// 
+// Dependencies: 
+// 
+// Revision:
+// Revision 0.01 - File Created
+// Additional Comments:
+// 
+//////////////////////////////////////////////////////////////////////////////////
+
+
+module traffic_controller #(
+    parameter integer CLK_FREQ_HZ = 100_000_000,
+    parameter integer TIME_SECONDS = 5
+)(
+    input  wire clk,
+    input  wire rst,
+
+    output reg ns_go,
+    output reg ns_stop,
+    output reg ew_go,
+    output reg ew_stop
+);
+
+    // Clock divider parameters
+    localparam integer DIV_COUNT = CLK_FREQ_HZ * TIME_SECONDS;
+    localparam integer CW = $clog2(DIV_COUNT);
+
+    reg [CW-1:0] N;
+    reg clk_en;
+
+    // FSM states
+    localparam NS_GO = 1'b0;
+    localparam EW_GO = 1'b1;
+
+    reg state;
+
+    // Clock divider: generate one enable pulse every 5 seconds
+    always @(posedge clk) begin
+        if (rst) begin
+            N      <= 0;
+            clk_en <= 0;
+        end
+        else if (N >= DIV_COUNT - 1) begin
+            N      <= 0;
+            clk_en <= 1;
+        end
+        else begin
+            N      <= N + 1'b1;
+            clk_en <= 0;
+        end
+    end
+
+    // FSM state register
+    always @(posedge clk) begin
+        if (rst)
+            state <= NS_GO;
+        else if (clk_en)
+            state <= ~state;
+    end
+
+    // Traffic signal outputs
+    always @(*) begin
+        case (state)
+            NS_GO: begin
+                ns_go   = 1'b1;
+                ns_stop = 1'b0;
+                ew_go   = 1'b0;
+                ew_stop = 1'b1;
+            end
+
+            EW_GO: begin
+                ns_go   = 1'b0;
+                ns_stop = 1'b1;
+                ew_go   = 1'b1;
+                ew_stop = 1'b0;
+            end
+
+            default: begin
+                ns_go   = 1'b0;
+                ns_stop = 1'b1;
+                ew_go   = 1'b0;
+                ew_stop = 1'b1;
+            end
+        endcase
+    end
+
+endmodule
+
+
+
+`timescale 1ns / 1ps
+//////////////////////////////////////////////////////////////////////////////////
+// Company: 
+// Engineer: 
+// 
+// Create Date: 26.10.2026 15:27:34
+// Design Name: 
+// Module Name: traffic_controller_tb
+// Project Name: 
+// Target Devices: 
+// Tool Versions: 
+// Description: 
+// 
+// Dependencies: 
+// 
+// Revision:
+// Revision 0.01 - File Created
+// Additional Comments:
+// 
+//////////////////////////////////////////////////////////////////////////////////
+
+
+
+
+module traffic_controller_tb;
+
+    reg clk = 0;
+    reg rst = 0;
+
+    wire ns_go, ns_stop;
+    wire ew_go, ew_stop;
+
+    
+    traffic_controller #(
+        .CLK_FREQ_HZ(10),
+        .TIME_SECONDS(1)
+    ) dut (
+        .clk(clk),
+        .rst(rst),
+        .ns_go(ns_go),
+        .ns_stop(ns_stop),
+        .ew_go(ew_go),
+        .ew_stop(ew_stop)
+    );
+
+   
+    always #5 clk = ~clk;
+
+    initial begin
+       
+        rst = 1;
+        #20;
+        rst = 0;
+
+        // Observe North-South GO
+        #100;
+        $display("NS_GO=%b NS_STOP=%b EW_GO=%b EW_STOP=%b",
+                  ns_go, ns_stop, ew_go, ew_stop);
+
+        // Observe East-West GO
+        #100;
+        $display("NS_GO=%b NS_STOP=%b EW_GO=%b EW_STOP=%b",
+                  ns_go, ns_stop, ew_go, ew_stop);
+
+        // Observe North-South GO again
+        #100;
+        $display("NS_GO=%b NS_STOP=%b EW_GO=%b EW_STOP=%b",
+                  ns_go, ns_stop, ew_go, ew_stop);
+
+        #20;
+        $finish;
+    end
+
+endmodule
